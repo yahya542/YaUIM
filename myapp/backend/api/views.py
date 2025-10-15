@@ -5,6 +5,70 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 import requests  # for Ollama API
+import pandas as pd
+import os
+from sentence_transformers import SentenceTransformer
+import faiss
+import numpy as np
+import logging
+
+# Configure logging
+logging.basicConfig(filename='chatbot.log', level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Global variables for caching
+EMBEDDINGS = None
+INDEX = None
+DATA_TEXTS = []
+MODEL = None
+
+def load_excel_data():
+    """Load and cache Excel data on server start"""
+    global EMBEDDINGS, INDEX, DATA_TEXTS, MODEL
+
+    excel_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'campus_data.xlsx')
+
+    if not os.path.exists(excel_path):
+        print("Warning: Excel file not found, using default data")
+        DATA_TEXTS = [
+            "Nama kampus: YaUIM",
+            "Fakultas: Teknik Informatika",
+            "Program Studi: Sistem Informasi"
+        ]
+        return
+
+    try:
+        # Read all sheets
+        xls = pd.ExcelFile(excel_path)
+        all_texts = []
+
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            # Convert each row to text
+            for _, row in df.iterrows():
+                row_text = f"{sheet_name}: " + ", ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+                all_texts.append(row_text)
+
+        DATA_TEXTS = all_texts
+
+        # Create embeddings and FAISS index
+        MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+        EMBEDDINGS = MODEL.encode(DATA_TEXTS)
+        INDEX = faiss.IndexFlatL2(EMBEDDINGS.shape[1])
+        INDEX.add(EMBEDDINGS)
+
+        print(f"✅ Loaded {len(DATA_TEXTS)} data entries from Excel")
+
+    except Exception as e:
+        print(f"Error loading Excel data: {e}")
+        DATA_TEXTS = [
+            "Nama kampus: YaUIM",
+            "Fakultas: Teknik Informatika",
+            "Program Studi: Sistem Informasi"
+        ]
+
+# Load data on module import
+load_excel_data()
 
 class DosenViewSet(viewsets.ModelViewSet):
     queryset = Dosen.objects.all()
@@ -27,19 +91,74 @@ def ask_chatbot(request):
     question = request.data.get('question')
     if not question:
         return Response({'error': 'Question is required'}, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Placeholder for RAG logic
-    # Here you would retrieve relevant data from DB, create embeddings, etc.
-    # For now, just forward to Ollama
-    
+
+    # Log the question
+    logging.info(f"Question received: {question}")
+
+    # Retrieve context using cached embeddings and FAISS
+    question_embedding = MODEL.encode([question])
+    distances, indices = INDEX.search(question_embedding, 3)
+
+    # Check relevance based on similarity score
+    min_distance = distances[0][0]  # Closest match distance
+    relevance_threshold = 1.0  # Adjust threshold as needed
+    is_relevant = min_distance <= relevance_threshold
+
+    context = ""
+    if is_relevant:
+        # Question relevant, use RAG
+        context_texts = [DATA_TEXTS[i] for i in indices[0]]
+        context = ' '.join(context_texts)
+        context_full = "\n".join(DATA_TEXTS)
+        prompt = f"""Hai! 😊 Saya AI assistant kampus YaUIM yang siap membantu Anda.
+
+Gunakan informasi di bawah ini untuk menjawab pertanyaan mahasiswa dengan cara yang:
+- Ramah dan helpful
+- Dalam Bahasa Indonesia sehari-hari
+- Singkat tapi informatif
+- Seperti percakapan manusia normal
+- Tambahkan emoji yang sesuai jika cocok
+
+Informasi Kampus:
+{context_full}
+
+Pertanyaan: {question}
+Jawaban:"""
+    else:
+        # Question not relevant to campus context
+        prompt = f"""Hai! 😊 Sepertinya pertanyaan Anda tidak berkaitan dengan kampus YaUIM.
+
+Saya adalah AI assistant yang khusus membantu mahasiswa dengan informasi kampus.
+Mohon maaf, saya hanya bisa menjawab pertanyaan tentang:
+- Informasi kampus YaUIM
+- Jadwal kuliah
+- Dosen dan staf
+- Informasi akademik
+- Fasilitas kampus
+
+Ada pertanyaan lain tentang kampus yang bisa saya bantu?
+
+Pertanyaan: {question}
+Jawaban singkat dan ramah:"""
+
     try:
         response = requests.post('http://localhost:11434/api/generate', json={
-            'model': 'llama3.2:latest-int8',
-            'prompt': question,
+            'model': 'tinyllama:latest',
+            'prompt': prompt,
             'stream': False
         })
-        answer = response.json().get('response', 'No response')
+        if response.status_code == 200:
+            answer = response.json().get('response', 'No response')
+        else:
+            answer = f"Error: {response.status_code} - {response.text}"
     except Exception as e:
-        answer = f'Error: {str(e)}'
-    
-    return Response({'answer': answer})
+        answer = f'Exception: {str(e)}'
+
+    # Log the response
+    logging.info(f"Answer: {answer}, Relevant: {is_relevant}")
+
+    return Response({
+        'answer': answer,
+        'context': context,
+        'is_relevant': is_relevant
+    })

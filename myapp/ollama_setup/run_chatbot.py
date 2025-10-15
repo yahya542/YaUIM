@@ -39,12 +39,19 @@ def retrieve_context(question, model, index, data, top_k=3):
 # Query Ollama
 def query_ollama(question, context):
     prompt = f"Context: {context}\nQuestion: {question}\nAnswer:"
-    response = requests.post('http://localhost:11434/api/generate', json={
-        'model': 'llama3.2:latest-int8',
-        'prompt': prompt,
-        'stream': False
-    })
-    return response.json().get('response', 'No response')
+    try:
+        response = requests.post('http://localhost:11434/api/generate', json={
+            'model': 'tinyllama:latest',
+            'prompt': prompt,
+            'stream': False
+        })
+        if response.status_code == 200:
+            return response.json().get('response', 'No response key')
+        else:
+            return f"Error: {response.status_code} - {response.text}"
+    except Exception as e:
+        return f"Exception: {str(e)}"
+
 
 if __name__ == "__main__":
     data = load_data()
