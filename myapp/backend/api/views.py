@@ -87,6 +87,70 @@ class JadwalViewSet(viewsets.ModelViewSet):
     serializer_class = JadwalSerializer
 
 @api_view(['POST'])
+def import_data(request):
+    """Import data from Excel file to database"""
+    try:
+        excel_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'campus_data.xlsx')
+
+        if not os.path.exists(excel_path):
+            return Response({'error': 'Excel file not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        xls = pd.ExcelFile(excel_path)
+
+        # Import Dosen
+        if 'Dosen' in xls.sheet_names:
+            df_dosen = pd.read_excel(xls, 'Dosen')
+            for _, row in df_dosen.iterrows():
+                Dosen.objects.get_or_create(
+                    nidn=row['NIDN'],
+                    defaults={'nama': row['Nama']}
+                )
+
+        # Import Kelas
+        if 'Kelas' in xls.sheet_names:
+            df_kelas = pd.read_excel(xls, 'Kelas')
+            for _, row in df_kelas.iterrows():
+                Kelas.objects.get_or_create(
+                    nama_kelas=row['Nama Kelas'],
+                    angkatan=row['Angkatan']
+                )
+
+        # Import Mahasiswa
+        if 'Mahasiswa' in xls.sheet_names:
+            df_mahasiswa = pd.read_excel(xls, 'Mahasiswa')
+            for _, row in df_mahasiswa.iterrows():
+                try:
+                    kelas = Kelas.objects.get(nama_kelas=row['Kelas'])
+                    Mahasiswa.objects.get_or_create(
+                        npm=row['NPM'],
+                        defaults={'nama': row['Nama'], 'kelas': kelas}
+                    )
+                except Kelas.DoesNotExist:
+                    continue
+
+        # Import Jadwal
+        if 'Jadwal' in xls.sheet_names:
+            df_jadwal = pd.read_excel(xls, 'Jadwal')
+            for _, row in df_jadwal.iterrows():
+                try:
+                    dosen = Dosen.objects.get(nidn=row['NIDN'])
+                    kelas = Kelas.objects.get(nama_kelas=row['Kelas'])
+                    Jadwal.objects.get_or_create(
+                        dosen=dosen,
+                        kelas=kelas,
+                        hari=row['Hari'],
+                        jam=row['Jam'],
+                        ruang=row['Ruang']
+                    )
+                except (Dosen.DoesNotExist, Kelas.DoesNotExist):
+                    continue
+
+        return Response({'message': 'Data imported successfully'}, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
 def ask_chatbot(request):
     question = request.data.get('question')
     if not question:

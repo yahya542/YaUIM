@@ -11,4 +11,5 @@ router.register(r'jadwal', views.JadwalViewSet)
 urlpatterns = [
     path('', include(router.urls)),
     path('ask/', views.ask_chatbot, name='ask_chatbot'),
+    path('import/', views.import_data, name='import_data'),
 ]
